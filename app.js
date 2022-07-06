@@ -8,9 +8,14 @@ import {
     Raycaster,
     Matrix4,
     WebGLRenderer,
-
+    Vector3,
+    Line,
+    BufferGeometry,
+    MeshLambertMaterial,
+    Mesh
 } from "three";
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { HTMLMesh } from 'three/examples/jsm/interactive/HTMLMesh.js';
 import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { IFCLoader } from "web-ifc-three/IFCLoader";
@@ -22,6 +27,15 @@ import {
 
 //Creates the Three.js scene
 const scene = new Scene();
+
+//Variables for VR hand controllers
+let controller1, controller2;
+let controllerGrip1, controllerGrip2;
+
+//Variable for raycaster to 'pick' objects
+let raycaster;
+
+const tempMatrix = new Matrix4();
 
 //Object to store the size of the viewport
 const size = {
@@ -73,15 +87,47 @@ const controls = new OrbitControls(camera, threeCanvas);
 controls.enableDamping = true;
 controls.target.set(-2, 0, 0);
 
-//Animation loop - WebXR needs 'setAnimationLoop' as opposed to 'requestAnimationFrame'
-const animate = () => {
-    controls.update();
-    renderer.render(scene, camera);
-    
-};
+//VR Controllers 
+controller1 = renderer.xr.getController( 0 );
+controller1.addEventListener( 'selectstart', pick );
+controller1.addEventListener( 'squeezestart', hideDetails );
+scene.add( controller1 );
 
-//WebXR needs 'setAnimationLoop' as opposed to 'requestAnimationFrame'
-renderer.setAnimationLoop(animate);
+//One can set controller 2 to perform another function on 'select' - currently both set to object picking
+controller2 = renderer.xr.getController( 1 );
+controller2.addEventListener( 'selectstart', highlight );
+controller2.addEventListener( 'squeezestart', clearHighlight );
+scene.add( controller2 );
+//controller2.addEventListener( 'selectend', clearHighlight );
+
+const controllerModelFactory = new XRControllerModelFactory();
+
+controllerGrip1 = renderer.xr.getControllerGrip( 0 );
+controllerGrip1.add( controllerModelFactory.createControllerModel( controllerGrip1 ) );
+scene.add( controllerGrip1 );
+
+controllerGrip2 = renderer.xr.getControllerGrip( 1 );
+controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
+scene.add( controllerGrip2 );
+
+//Lines to shoot out from VR controllers to help aim
+const geometry = new BufferGeometry().setFromPoints( [ new Vector3( 0, 0, 0 ), new Vector3( 0, 0, - 1 ) ] );
+const line = new Line( geometry );
+line.name = 'line';
+line.scale.z = 5;
+
+controller1.add( line.clone() );
+controller2.add( line.clone() );
+
+//Animation loop
+function animate() {
+    //WebXR needs 'setAnimationLoop' as opposed to 'requestAnimationFrame'
+    renderer.setAnimationLoop( render );
+}
+
+function render() {
+    renderer.render( scene, camera );
+}
 
 animate();
 
@@ -103,7 +149,20 @@ const input = document.getElementById("file-input");
     "change",
     (changed) => {
       const ifcURL = URL.createObjectURL(changed.target.files[0]);
-      ifcLoader.load(ifcURL, (ifcModel) => scene.add(ifcModel));
+      ifcLoader.load(ifcURL, (ifcModel) => {
+        //Make a translucent copy geometry - so when IFC model is hidden on item highlight, the remaining items take 'ghost' view  
+        const modelCopy = new Mesh(
+            ifcModel.geometry,
+            new MeshLambertMaterial({
+                    transparent: true,
+                    opacity: 0.1,
+                    color: 0x77aaff
+        }));
+        ifcModels.push(ifcModel);
+        console.log('the ifc model:', ifcModel)
+        scene.add(modelCopy)
+        scene.add(ifcModel)
+      });
     },
     false
   );
@@ -114,56 +173,97 @@ ifcLoader.ifcManager.setupThreeMeshBVH(
     disposeBoundsTree,
     acceleratedRaycast);
 
-const raycaster = new Raycaster();
+raycaster = new Raycaster();
 raycaster.firstHitOnly = true;
 
-let controller1, controller2;
-const tempMatrix = new Matrix4();
-
-function cast(event) {
-    tempMatrix.identity().extractRotation( event.target.matrixWorld );
-
-    raycaster.ray.origin.setFromMatrixPosition( event.target.matrixWorld );
+function cast(controller) {
+    tempMatrix.identity().extractRotation( controller.matrixWorld );
+    raycaster.ray.origin.setFromMatrixPosition( controller.matrixWorld );
     raycaster.ray.direction.set( 0, 0, - 1 ).applyMatrix4( tempMatrix );
-
     // Casts a ray
     return raycaster.intersectObjects(ifcModels);
 }
 
-const output = document.getElementById("id-output");
+const outputId = document.getElementById("id-output");
+const outputDesc = document.getElementById("desc-output");
+const messageBlock = document.getElementById("message-container");
+propMesh = new HTMLMesh( messageBlock );
 
-function pick(event) {
-    console.log('casting', event)
-    console.log('scene: ', scene)
-    const found = cast(event)[0];
+async function pick(event) {
+    const controller = event.target;
+    const found = cast(controller)[0];
     if (found) {
         const index = found.faceIndex;
         const geometry = found.object.geometry;
         const ifc = ifcLoader.ifcManager;
         const id = ifc.getExpressId(geometry, index);
+        const modelID = found.object.modelID;
+        const props = await ifc.getItemProperties(modelID, id);
         console.log(id);
-        output.innerHTML = id;
+        console.log(found.object);
+        const expId = props.expressID;
+        outputId.innerHTML = `ExpressID : ${expId}`;
+        const desc = props.Name.value;
+        outputDesc.innerHTML = `Name: ${desc}`;
+        propMesh.removeFromParent();
+        propMesh = new HTMLMesh( messageBlock );
+        setX = found.point.x + 0.2*(controller.position.x - found.point.x);
+        setY = found.point.y + 0.2*(controller.position.y - found.point.y);
+        setZ = found.point.z + 0.2*(controller.position.z - found.point.z);
+        propMesh.position.set( setX, setY, setZ );
+        // propMesh.quaternion = found.object.mesh.quaternion
+        propMesh.lookAt(controller.position);
+        propMesh.scale.setScalar( 2 );
+        scene.add(propMesh);
     }
 }
 
-// window.ondblclick = pick;
+function hideDetails(event) {
+    propMesh.removeFromParent();
+}
 
-controller1 = renderer.xr.getController( 0 );
-controller1.addEventListener( 'selectstart', pick );
-scene.add( controller1 );
+//Will apply material completely transparent on select
+const highlightStrongMaterial = new MeshLambertMaterial({
+    transparent: true,
+    opacity: 0.9,
+    color: 0xff88ff,
+    depthTest: false
+})
 
-//One can set controller 2 to perform another function on 'select' - currently both set to object picking
-controller2 = renderer.xr.getController( 1 );
-controller2.addEventListener( 'selectstart', pick );
-scene.add( controller2 );
-//controller2.addEventListener( 'selectend', onSelectStart );
+//For seeing through items
+function highlight(event) {
+    const controller = event.target;
+    const found = cast(controller)[0];
+    if (found) {
+        const index = found.faceIndex;
+        const geometry = found.object.geometry;
+        const id = ifcLoader.ifcManager.getExpressId(geometry, index);
+        const modelID = found.object.modelID;
+        //Creates 'highlight' subset
+        ifcLoader.ifcManager.createSubset({
+            modelID: modelID,
+            ids: [id],
+            material: highlightStrongMaterial,
+            scene: scene,
+            removePrevious: true,
+            customID: 'highlight-sub'
+        });
+        for (var i = 0; i < ifcModels.length; i++) {
+            //Hide all IFC models (only the transparent copies will remain seen with the highlight subset)
+            ifcModels[i].visible = false;
+        }
+    } else {
+        clearHighlight(event)
+    }
+}
 
-const controllerModelFactory = new XRControllerModelFactory();
-
-controllerGrip1 = renderer.xr.getControllerGrip( 0 );
-controllerGrip1.add( controllerModelFactory.createControllerModel( controllerGrip1 ) );
-scene.add( controllerGrip1 );
-
-controllerGrip2 = renderer.xr.getControllerGrip( 1 );
-controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
-scene.add( controllerGrip2 );
+//Removes previous highlight
+function clearHighlight(event) {
+    //Loop through all loaded IFC models
+    for (var i = 0; i < ifcModels.length; i++) {
+        //Remove the 'highlight' subset
+        ifcLoader.ifcManager.removeSubset(ifcModels[i].modelID, highlightStrongMaterial, 'highlight-sub');
+        //Make the IFC Model visible again
+        ifcModels[i].visible = true;
+    }
+}

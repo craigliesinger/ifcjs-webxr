@@ -28877,6 +28877,20 @@ function testPoint( point, index, localThresholdSq, matrixWorld, raycaster, inte
 
 }
 
+class CanvasTexture extends Texture {
+
+	constructor( canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy ) {
+
+		super( canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy );
+
+		this.needsUpdate = true;
+
+	}
+
+}
+
+CanvasTexture.prototype.isCanvasTexture = true;
+
 class SphereGeometry extends BufferGeometry {
 
 	constructor( radius = 1, widthSegments = 32, heightSegments = 16, phiStart = 0, phiLength = Math.PI * 2, thetaStart = 0, thetaLength = Math.PI ) {
@@ -35361,6 +35375,317 @@ class VRButton {
 		}
 
 	}
+
+}
+
+class HTMLMesh extends Mesh {
+
+	constructor( dom ) {
+
+		const texture = new HTMLTexture( dom );
+
+		const geometry = new PlaneGeometry( texture.image.width * 0.001, texture.image.height * 0.001 );
+		const material = new MeshBasicMaterial( { map: texture, toneMapped: false } );
+
+		super( geometry, material );
+
+		function onEvent( event ) {
+
+			material.map.dispatchEvent( event );
+
+		}
+
+		this.addEventListener( 'mousedown', onEvent );
+		this.addEventListener( 'mousemove', onEvent );
+		this.addEventListener( 'mouseup', onEvent );
+		this.addEventListener( 'click', onEvent );
+
+	}
+
+}
+
+class HTMLTexture extends CanvasTexture {
+
+	constructor( dom ) {
+
+		super( html2canvas( dom ) );
+
+		this.dom = dom;
+
+		this.anisotropy = 16;
+		this.encoding = sRGBEncoding;
+		this.minFilter = LinearFilter;
+		this.magFilter = LinearFilter;
+
+	}
+
+	dispatchEvent( event ) {
+
+		htmlevent( this.dom, event.type, event.data.x, event.data.y );
+
+		this.update();
+
+	}
+
+	update() {
+
+		this.image = html2canvas( this.dom );
+		this.needsUpdate = true;
+
+	}
+
+}
+
+//
+
+const canvases = new WeakMap();
+
+function html2canvas( element ) {
+
+	var range = document.createRange();
+
+	function Clipper( context ) {
+
+		var clips = [];
+		var isClipping = false;
+
+		function doClip() {
+
+			if ( isClipping ) {
+
+				isClipping = false;
+				context.restore();
+
+			}
+
+			if ( clips.length === 0 ) return;
+
+			var minX = - Infinity, minY = - Infinity;
+			var maxX = Infinity, maxY = Infinity;
+
+			for ( var i = 0; i < clips.length; i ++ ) {
+
+				var clip = clips[ i ];
+
+				minX = Math.max( minX, clip.x );
+				minY = Math.max( minY, clip.y );
+				maxX = Math.min( maxX, clip.x + clip.width );
+				maxY = Math.min( maxY, clip.y + clip.height );
+
+			}
+
+			context.save();
+			context.beginPath();
+			context.rect( minX, minY, maxX - minX, maxY - minY );
+			context.clip();
+
+			isClipping = true;
+
+		}
+
+		return {
+
+			add: function ( clip ) {
+
+				clips.push( clip );
+				doClip();
+
+			},
+
+			remove: function () {
+
+				clips.pop();
+				doClip();
+
+			}
+
+		};
+
+	}
+
+	function drawText( style, x, y, string ) {
+
+		if ( string !== '' ) {
+
+			if ( style.textTransform === 'uppercase' ) {
+
+				string = string.toUpperCase();
+
+			}
+
+			context.font = style.fontSize + ' ' + style.fontFamily;
+			context.textBaseline = 'top';
+			context.fillStyle = style.color;
+			context.fillText( string, x, y );
+
+		}
+
+	}
+
+	function drawBorder( style, which, x, y, width, height ) {
+
+		var borderWidth = style[ which + 'Width' ];
+		var borderStyle = style[ which + 'Style' ];
+		var borderColor = style[ which + 'Color' ];
+
+		if ( borderWidth !== '0px' && borderStyle !== 'none' && borderColor !== 'transparent' && borderColor !== 'rgba(0, 0, 0, 0)' ) {
+
+			context.strokeStyle = borderColor;
+			context.beginPath();
+			context.moveTo( x, y );
+			context.lineTo( x + width, y + height );
+			context.stroke();
+
+		}
+
+	}
+
+	function drawElement( element, style ) {
+
+		var x = 0, y = 0, width = 0, height = 0;
+
+		if ( element.nodeType === 3 ) {
+
+			// text
+
+			range.selectNode( element );
+
+			var rect = range.getBoundingClientRect();
+
+			x = rect.left - offset.left - 0.5;
+			y = rect.top - offset.top - 0.5;
+			width = rect.width;
+			height = rect.height;
+
+			drawText( style, x, y, element.nodeValue.trim() );
+
+		} else {
+
+			if ( element.style.display === 'none' ) return;
+
+			var rect = element.getBoundingClientRect();
+
+			x = rect.left - offset.left - 0.5;
+			y = rect.top - offset.top - 0.5;
+			width = rect.width;
+			height = rect.height;
+
+			style = window.getComputedStyle( element );
+
+			var backgroundColor = style.backgroundColor;
+
+			if ( backgroundColor !== 'transparent' && backgroundColor !== 'rgba(0, 0, 0, 0)' ) {
+
+				context.fillStyle = backgroundColor;
+				context.fillRect( x, y, width, height );
+
+			}
+
+			drawBorder( style, 'borderTop', x, y, width, 0 );
+			drawBorder( style, 'borderLeft', x, y, 0, height );
+			drawBorder( style, 'borderBottom', x, y + height, width, 0 );
+			drawBorder( style, 'borderRight', x + width, y, 0, height );
+
+			if ( element.type === 'color' || element.type === 'text' ) {
+
+				clipper.add( { x: x, y: y, width: width, height: height } );
+
+				drawText( style, x + parseInt( style.paddingLeft ), y + parseInt( style.paddingTop ), element.value );
+
+				clipper.remove();
+
+			}
+
+		}
+
+		/*
+		// debug
+		context.strokeStyle = '#' + Math.random().toString( 16 ).slice( - 3 );
+		context.strokeRect( x - 0.5, y - 0.5, width + 1, height + 1 );
+		*/
+
+		var isClipping = style.overflow === 'auto' || style.overflow === 'hidden';
+
+		if ( isClipping ) clipper.add( { x: x, y: y, width: width, height: height } );
+
+		for ( var i = 0; i < element.childNodes.length; i ++ ) {
+
+			drawElement( element.childNodes[ i ], style );
+
+		}
+
+		if ( isClipping ) clipper.remove();
+
+	}
+
+	const offset = element.getBoundingClientRect();
+
+	let canvas;
+
+	if ( canvases.has( element ) ) {
+
+		canvas = canvases.get( element );
+
+	} else {
+
+		canvas = document.createElement( 'canvas' );
+		canvas.width = offset.width;
+		canvas.height = offset.height;
+
+	}
+
+	const context = canvas.getContext( '2d'/*, { alpha: false }*/ );
+
+	const clipper = new Clipper( context );
+
+	// console.time( 'drawElement' );
+
+	drawElement( element );
+
+	// console.timeEnd( 'drawElement' );
+
+	return canvas;
+
+}
+
+function htmlevent( element, event, x, y ) {
+
+	const mouseEventInit = {
+		clientX: ( x * element.offsetWidth ) + element.offsetLeft,
+		clientY: ( y * element.offsetHeight ) + element.offsetTop,
+		view: element.ownerDocument.defaultView
+	};
+
+	window.dispatchEvent( new MouseEvent( event, mouseEventInit ) );
+
+	const rect = element.getBoundingClientRect();
+
+	x = x * rect.width + rect.left;
+	y = y * rect.height + rect.top;
+
+	function traverse( element ) {
+
+		if ( element.nodeType !== 3 ) {
+
+			const rect = element.getBoundingClientRect();
+
+			if ( x > rect.left && x < rect.right && y > rect.top && y < rect.bottom ) {
+
+				element.dispatchEvent( new MouseEvent( event, mouseEventInit ) );
+
+			}
+
+			for ( var i = 0; i < element.childNodes.length; i ++ ) {
+
+				traverse( element.childNodes[ i ] );
+
+			}
+
+		}
+
+	}
+
+	traverse( element );
 
 }
 
@@ -93096,6 +93421,15 @@ function disposeBoundsTree() {
 //Creates the Three.js scene
 const scene = new Scene();
 
+//Variables for VR hand controllers
+let controller1, controller2;
+let controllerGrip1, controllerGrip2;
+
+//Variable for raycaster to 'pick' objects
+let raycaster;
+
+const tempMatrix = new Matrix4();
+
 //Object to store the size of the viewport
 const size = {
     width: window.innerWidth,
@@ -93146,15 +93480,47 @@ const controls = new OrbitControls(camera, threeCanvas);
 controls.enableDamping = true;
 controls.target.set(-2, 0, 0);
 
-//Animation loop - WebXR needs 'setAnimationLoop' as opposed to 'requestAnimationFrame'
-const animate = () => {
-    controls.update();
-    renderer.render(scene, camera);
-    
-};
+//VR Controllers 
+controller1 = renderer.xr.getController( 0 );
+controller1.addEventListener( 'selectstart', pick );
+controller1.addEventListener( 'squeezestart', hideDetails );
+scene.add( controller1 );
 
-//WebXR needs 'setAnimationLoop' as opposed to 'requestAnimationFrame'
-renderer.setAnimationLoop(animate);
+//One can set controller 2 to perform another function on 'select' - currently both set to object picking
+controller2 = renderer.xr.getController( 1 );
+controller2.addEventListener( 'selectstart', highlight );
+controller2.addEventListener( 'squeezestart', clearHighlight );
+scene.add( controller2 );
+//controller2.addEventListener( 'selectend', clearHighlight );
+
+const controllerModelFactory = new XRControllerModelFactory();
+
+controllerGrip1 = renderer.xr.getControllerGrip( 0 );
+controllerGrip1.add( controllerModelFactory.createControllerModel( controllerGrip1 ) );
+scene.add( controllerGrip1 );
+
+controllerGrip2 = renderer.xr.getControllerGrip( 1 );
+controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
+scene.add( controllerGrip2 );
+
+//Lines to shoot out from VR controllers to help aim
+const geometry = new BufferGeometry().setFromPoints( [ new Vector3( 0, 0, 0 ), new Vector3( 0, 0, - 1 ) ] );
+const line = new Line( geometry );
+line.name = 'line';
+line.scale.z = 5;
+
+controller1.add( line.clone() );
+controller2.add( line.clone() );
+
+//Animation loop
+function animate() {
+    //WebXR needs 'setAnimationLoop' as opposed to 'requestAnimationFrame'
+    renderer.setAnimationLoop( render );
+}
+
+function render() {
+    renderer.render( scene, camera );
+}
 
 animate();
 
@@ -93169,14 +93535,27 @@ window.addEventListener("resize", () => {
 //Sets up the IFC loading
 const ifcModels = [];
 const ifcLoader = new IFCLoader();
-ifcLoader.ifcManager.setWasmPath("ifcjs-webxr/");
+ifcLoader.ifcManager.setWasmPath("../../../");
 
 const input = document.getElementById("file-input");
   input.addEventListener(
     "change",
     (changed) => {
       const ifcURL = URL.createObjectURL(changed.target.files[0]);
-      ifcLoader.load(ifcURL, (ifcModel) => scene.add(ifcModel));
+      ifcLoader.load(ifcURL, (ifcModel) => {
+        //Make a translucent copy geometry - so when IFC model is hidden on item highlight, the remaining items take 'ghost' view  
+        const modelCopy = new Mesh(
+            ifcModel.geometry,
+            new MeshLambertMaterial({
+                    transparent: true,
+                    opacity: 0.1,
+                    color: 0x77aaff
+        }));
+        ifcModels.push(ifcModel);
+        console.log('the ifc model:', ifcModel);
+        scene.add(modelCopy);
+        scene.add(ifcModel);
+      });
     },
     false
   );
@@ -93187,56 +93566,97 @@ ifcLoader.ifcManager.setupThreeMeshBVH(
     disposeBoundsTree,
     acceleratedRaycast);
 
-const raycaster = new Raycaster();
+raycaster = new Raycaster();
 raycaster.firstHitOnly = true;
 
-let controller1, controller2;
-const tempMatrix = new Matrix4();
-
-function cast(event) {
-    tempMatrix.identity().extractRotation( event.target.matrixWorld );
-
-    raycaster.ray.origin.setFromMatrixPosition( event.target.matrixWorld );
+function cast(controller) {
+    tempMatrix.identity().extractRotation( controller.matrixWorld );
+    raycaster.ray.origin.setFromMatrixPosition( controller.matrixWorld );
     raycaster.ray.direction.set( 0, 0, - 1 ).applyMatrix4( tempMatrix );
-
     // Casts a ray
     return raycaster.intersectObjects(ifcModels);
 }
 
-const output = document.getElementById("id-output");
+const outputId = document.getElementById("id-output");
+const outputDesc = document.getElementById("desc-output");
+const messageBlock = document.getElementById("message-container");
+propMesh = new HTMLMesh( messageBlock );
 
-function pick(event) {
-    console.log('casting', event);
-    console.log('scene: ', scene);
-    const found = cast(event)[0];
+async function pick(event) {
+    const controller = event.target;
+    const found = cast(controller)[0];
     if (found) {
         const index = found.faceIndex;
         const geometry = found.object.geometry;
         const ifc = ifcLoader.ifcManager;
         const id = ifc.getExpressId(geometry, index);
+        const modelID = found.object.modelID;
+        const props = await ifc.getItemProperties(modelID, id);
         console.log(id);
-        output.innerHTML = id;
+        console.log(found.object);
+        const expId = props.expressID;
+        outputId.innerHTML = `ExpressID : ${expId}`;
+        const desc = props.Name.value;
+        outputDesc.innerHTML = `Name: ${desc}`;
+        propMesh.removeFromParent();
+        propMesh = new HTMLMesh( messageBlock );
+        setX = found.point.x + 0.2*(controller.position.x - found.point.x);
+        setY = found.point.y + 0.2*(controller.position.y - found.point.y);
+        setZ = found.point.z + 0.2*(controller.position.z - found.point.z);
+        propMesh.position.set( setX, setY, setZ );
+        // propMesh.quaternion = found.object.mesh.quaternion
+        propMesh.lookAt(controller.position);
+        propMesh.scale.setScalar( 2 );
+        scene.add(propMesh);
     }
 }
 
-// window.ondblclick = pick;
+function hideDetails(event) {
+    propMesh.removeFromParent();
+}
 
-controller1 = renderer.xr.getController( 0 );
-controller1.addEventListener( 'selectstart', pick );
-scene.add( controller1 );
+//Will apply material completely transparent on select
+const highlightStrongMaterial = new MeshLambertMaterial({
+    transparent: true,
+    opacity: 0.9,
+    color: 0xff88ff,
+    depthTest: false
+});
 
-//One can set controller 2 to perform another function on 'select' - currently both set to object picking
-controller2 = renderer.xr.getController( 1 );
-controller2.addEventListener( 'selectstart', pick );
-scene.add( controller2 );
-//controller2.addEventListener( 'selectend', onSelectStart );
+//For seeing through items
+function highlight(event) {
+    const controller = event.target;
+    const found = cast(controller)[0];
+    if (found) {
+        const index = found.faceIndex;
+        const geometry = found.object.geometry;
+        const id = ifcLoader.ifcManager.getExpressId(geometry, index);
+        const modelID = found.object.modelID;
+        //Creates 'highlight' subset
+        ifcLoader.ifcManager.createSubset({
+            modelID: modelID,
+            ids: [id],
+            material: highlightStrongMaterial,
+            scene: scene,
+            removePrevious: true,
+            customID: 'highlight-sub'
+        });
+        for (var i = 0; i < ifcModels.length; i++) {
+            //Hide all IFC models (only the transparent copies will remain seen with the highlight subset)
+            ifcModels[i].visible = false;
+        }
+    } else {
+        clearHighlight();
+    }
+}
 
-const controllerModelFactory = new XRControllerModelFactory();
-
-controllerGrip1 = renderer.xr.getControllerGrip( 0 );
-controllerGrip1.add( controllerModelFactory.createControllerModel( controllerGrip1 ) );
-scene.add( controllerGrip1 );
-
-controllerGrip2 = renderer.xr.getControllerGrip( 1 );
-controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
-scene.add( controllerGrip2 );
+//Removes previous highlight
+function clearHighlight(event) {
+    //Loop through all loaded IFC models
+    for (var i = 0; i < ifcModels.length; i++) {
+        //Remove the 'highlight' subset
+        ifcLoader.ifcManager.removeSubset(ifcModels[i].modelID, highlightStrongMaterial, 'highlight-sub');
+        //Make the IFC Model visible again
+        ifcModels[i].visible = true;
+    }
+}
