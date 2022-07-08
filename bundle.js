@@ -32616,6 +32616,79 @@ class ImageBitmapLoader extends Loader {
 
 ImageBitmapLoader.prototype.isImageBitmapLoader = true;
 
+class Clock {
+
+	constructor( autoStart = true ) {
+
+		this.autoStart = autoStart;
+
+		this.startTime = 0;
+		this.oldTime = 0;
+		this.elapsedTime = 0;
+
+		this.running = false;
+
+	}
+
+	start() {
+
+		this.startTime = now();
+
+		this.oldTime = this.startTime;
+		this.elapsedTime = 0;
+		this.running = true;
+
+	}
+
+	stop() {
+
+		this.getElapsedTime();
+		this.running = false;
+		this.autoStart = false;
+
+	}
+
+	getElapsedTime() {
+
+		this.getDelta();
+		return this.elapsedTime;
+
+	}
+
+	getDelta() {
+
+		let diff = 0;
+
+		if ( this.autoStart && ! this.running ) {
+
+			this.start();
+			return 0;
+
+		}
+
+		if ( this.running ) {
+
+			const newTime = now();
+
+			diff = ( newTime - this.oldTime ) / 1000;
+			this.oldTime = newTime;
+
+			this.elapsedTime += diff;
+
+		}
+
+		return diff;
+
+	}
+
+}
+
+function now() {
+
+	return ( typeof performance === 'undefined' ? Date : performance ).now(); // see #10732
+
+}
+
 // Characters [].:/ are reserved for track binding syntax.
 const _RESERVED_CHARS_RE = '\\[\\]\\.:\\/';
 const _reservedRe = new RegExp( '[' + _RESERVED_CHARS_RE + ']', 'g' );
@@ -93442,6 +93515,18 @@ camera.position.z = 15;
 camera.position.y = 13;
 camera.position.x = 8;
 
+//Create a 3D object to carry the camera around XR session
+const cameraDolly = new Object3D();
+cameraDolly.position.x = 0;
+cameraDolly.position.y = 1.6;
+cameraDolly.position.z = 5;
+cameraDolly.add(camera);
+scene.add(cameraDolly);
+
+//Add dummy camera to accurately get camera orientation in handleMovement function
+const dummyCam = new Object3D();
+camera.add(dummyCam);
+
 //Creates the lights of the scene
 const lightColor = 0xffffff;
 
@@ -93483,7 +93568,10 @@ controls.target.set(-2, 0, 0);
 //VR Controllers 
 controller1 = renderer.xr.getController( 0 );
 controller1.addEventListener( 'selectstart', pick );
-controller1.addEventListener( 'squeezestart', hideDetails );
+// controller1.addEventListener( 'squeezestart', hideDetails );
+controller1.addEventListener( 'squeezestart', allowMovement );
+controller1.addEventListener( 'squeezeend', stopMovement );
+controller1.addEventListener( 'thumbstickmoved', moveUserWithJoystick );
 scene.add( controller1 );
 
 //One can set controller 2 to perform another function on 'select' - currently both set to object picking
@@ -93503,6 +93591,12 @@ controllerGrip2 = renderer.xr.getControllerGrip( 1 );
 controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGrip2 ) );
 scene.add( controllerGrip2 );
 
+// Needed to add controllers to dolly??
+// cameraDolly.add(controller1);
+// cameraDolly.add(controller2);
+// cameraDolly.add(controllerGrip1);
+// cameraDolly.add(controllerGrip2);
+
 //Lines to shoot out from VR controllers to help aim
 const geometry = new BufferGeometry().setFromPoints( [ new Vector3( 0, 0, 0 ), new Vector3( 0, 0, - 1 ) ] );
 const line = new Line( geometry );
@@ -93518,7 +93612,12 @@ function animate() {
     renderer.setAnimationLoop( render );
 }
 
+const clock = new Clock();
+
 function render() {
+    const dt = clock.getDelta();
+    if (controller1) { handleUserMovement(dt); }
+    moveUserWithJoystick();
     renderer.render( scene, camera );
 }
 
@@ -93611,10 +93710,6 @@ async function pick(event) {
     }
 }
 
-function hideDetails(event) {
-    propMesh.removeFromParent();
-}
-
 //Will apply material completely transparent on select
 const highlightStrongMaterial = new MeshLambertMaterial({
     transparent: true,
@@ -93659,4 +93754,197 @@ function clearHighlight(event) {
         //Make the IFC Model visible again
         ifcModels[i].visible = true;
     }
+}
+
+//Functions to handle user movement around scene (3 of the 6 DoF)
+var letUserMove = false;
+function allowMovement() { letUserMove = true; }
+function stopMovement() { letUserMove = false; }
+function handleUserMovement(dt) {
+    if (letUserMove) {
+        const speed = 2;
+        const moveZ = -dt * speed;
+        const saveQuat = cameraDolly.quaternion.clone();
+        var holder = new Quaternion();
+        dummyCam.getWorldQuaternion(holder);
+        cameraDolly.quaternion.copy(holder);
+        cameraDolly.translateZ(moveZ);
+        cameraDolly.quaternion.copy(saveQuat);
+    }
+}
+
+/* 
+No way for me to test with no device - ThreeJS currently doesn't support VR thumbstick event listeners - 
+so this is based on solution found on Stack Overflow here: https://stackoverflow.com/questions/62476426/webxr-controllers-for-button-pressing-in-three-js
+*/
+
+var cameraVector = new Vector3();
+const prevGamePads = new Map();
+
+function moveUserWithJoystick() {
+    var handedness = "unknown";
+
+    //determine if we are in an xr session
+    const session = renderer.xr.getSession();
+    let i = 0;
+
+    if (session) {
+        let xrCamera = renderer.xr.getCamera(camera);
+        xrCamera.getWorldDirection(cameraVector);
+
+        //a check to prevent console errors if only one input source
+        if (isIterable(session.inputSources)) {
+            for (const source of session.inputSources) {
+                if (source && source.handedness) {
+                    handedness = source.handedness; //left or right controllers
+                }
+                if (!source.gamepad) continue;
+                renderer.xr.getController(i++);
+                const old = prevGamePads.get(source);
+                const data = {
+                    handedness: handedness,
+                    buttons: source.gamepad.buttons.map((b) => b.value),
+                    axes: source.gamepad.axes.slice(0)
+                };
+                if (old) {
+                    data.buttons.forEach((value, i) => {
+                        //handlers for buttons
+                        if (value !== old.buttons[i] || Math.abs(value) > 0.8) {
+                            //check if it is 'all the way pushed'
+                            if (value === 1) {
+                                //console.log("Button" + i + "Down");
+                                if (data.handedness == "left") {
+                                    //console.log("Left Paddle Down");
+                                    if (i == 1) {
+                                        cameraDolly.rotateY(-THREE.Math.degToRad(1));
+                                    }
+                                    if (i == 3) {
+                                        //reset teleport to home position
+                                        cameraDolly.position.x = 0;
+                                        cameraDolly.position.y = 5;
+                                        cameraDolly.position.z = 0;
+                                    }
+                                } else {
+                                    //console.log("Right Paddle Down");
+                                    if (i == 1) {
+                                        cameraDolly.rotateY(THREE.Math.degToRad(1));
+                                    }
+                                }
+                            } else {
+                                // console.log("Button" + i + "Up");
+
+                                if (i == 1) {
+                                    //use the paddle buttons to rotate
+                                    if (data.handedness == "left") {
+                                        //console.log("Left Paddle Down");
+                                        cameraDolly.rotateY(-THREE.Math.degToRad(Math.abs(value)));
+                                    } else {
+                                        //console.log("Right Paddle Down");
+                                        cameraDolly.rotateY(THREE.Math.degToRad(Math.abs(value)));
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    data.axes.forEach((value, i) => {
+                        //handlers for thumbsticks
+                        //if thumbstick axis has moved beyond the minimum threshold from center, windows mixed reality seems to wander up to about .17 with no input
+                        if (Math.abs(value) > 0.2) {
+                            //set the speedFactor per axis, with acceleration when holding above threshold, up to a max speed
+                            speedFactor[i] > 1 ? (speedFactor[i] = 1) : (speedFactor[i] *= 1.001);
+                            console.log(value, speedFactor[i], i);
+                            if (i == 2) {
+                                //left and right axis on thumbsticks
+                                if (data.handedness == "left") {
+                                    // (data.axes[2] > 0) ? console.log('left on left thumbstick') : console.log('right on left thumbstick')
+
+                                    //move our dolly
+                                    //we reverse the vectors 90degrees so we can do straffing side to side movement
+                                    cameraDolly.position.x -= cameraVector.z * speedFactor[i] * data.axes[2];
+                                    cameraDolly.position.z += cameraVector.x * speedFactor[i] * data.axes[2];
+
+                                    //provide haptic feedback if available in browser
+                                    if (
+                                        source.gamepad.hapticActuators &&
+                                        source.gamepad.hapticActuators[0]
+                                    ) {
+                                        var pulseStrength = Math.abs(data.axes[2]) + Math.abs(data.axes[3]);
+                                        if (pulseStrength > 0.75) {
+                                            pulseStrength = 0.75;
+                                        }
+
+                                        source.gamepad.hapticActuators[0].pulse(
+                                            pulseStrength,
+                                            100
+                                        );
+                                    }
+                                } else {
+                                    // (data.axes[2] > 0) ? console.log('left on right thumbstick') : console.log('right on right thumbstick')
+                                    cameraDolly.rotateY(-THREE.Math.degToRad(data.axes[2]));
+                                }
+                                controls.update();
+                            }
+
+                            if (i == 3) {
+                                //up and down axis on thumbsticks
+                                if (data.handedness == "left") {
+                                    // (data.axes[3] > 0) ? console.log('up on left thumbstick') : console.log('down on left thumbstick')
+                                    cameraDolly.position.y -= speedFactor[i] * data.axes[3];
+                                    //provide haptic feedback if available in browser
+                                    if (
+                                        source.gamepad.hapticActuators &&
+                                        source.gamepad.hapticActuators[0]
+                                    ) {
+                                        var pulseStrength = Math.abs(data.axes[3]);
+                                        if (pulseStrength > 0.75) {
+                                            pulseStrength = 0.75;
+                                        }
+                                        source.gamepad.hapticActuators[0].pulse(
+                                            pulseStrength,
+                                            100
+                                        );
+                                    }
+                                } else {
+                                    // (data.axes[3] > 0) ? console.log('up on right thumbstick') : console.log('down on right thumbstick')
+                                    cameraDolly.position.x -= cameraVector.x * speedFactor[i] * data.axes[3];
+                                    cameraDolly.position.z -= cameraVector.z * speedFactor[i] * data.axes[3];
+
+                                    //provide haptic feedback if available in browser
+                                    if (
+                                        source.gamepad.hapticActuators &&
+                                        source.gamepad.hapticActuators[0]
+                                    ) {
+                                        var pulseStrength = Math.abs(data.axes[2]) + Math.abs(data.axes[3]);
+                                        if (pulseStrength > 0.75) {
+                                            pulseStrength = 0.75;
+                                        }
+                                        source.gamepad.hapticActuators[0].pulse(
+                                            pulseStrength,
+                                            100
+                                        );
+                                    }
+                                }
+                                controls.update();
+                            }
+                        } else {
+                            //axis below threshold - reset the speedFactor if it is greater than zero  or 0.025 but below our threshold
+                            if (Math.abs(value) > 0.025) {
+                                speedFactor[i] = 0.025;
+                            }
+                        }
+                    });
+                }
+                ///store this frames data to compate with in the next frame
+                prevGamePads.set(source, data);
+            }
+        }
+    }
+}
+
+function isIterable(obj) {  //function to check if object is iterable
+    // checks for null and undefined
+    if (obj == null) {
+        return false;
+    }
+    return typeof obj[Symbol.iterator] === "function";
 }
