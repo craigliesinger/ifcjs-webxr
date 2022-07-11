@@ -108,7 +108,6 @@ controller1.addEventListener( 'selectstart', pick );
 // controller1.addEventListener( 'squeezestart', hideDetails );
 controller1.addEventListener( 'squeezestart', allowMovement );
 controller1.addEventListener( 'squeezeend', stopMovement );
-controller1.addEventListener( 'thumbstickmoved', moveUserWithJoystick );
 scene.add( controller1 );
 
 //One can set controller 2 to perform another function on 'select' - currently both set to object picking
@@ -129,10 +128,10 @@ controllerGrip2.add( controllerModelFactory.createControllerModel( controllerGri
 scene.add( controllerGrip2 );
 
 // Needed to add controllers to dolly??
-// cameraDolly.add(controller1);
-// cameraDolly.add(controller2);
-// cameraDolly.add(controllerGrip1);
-// cameraDolly.add(controllerGrip2);
+cameraDolly.add(controller1);
+cameraDolly.add(controller2);
+cameraDolly.add(controllerGrip1);
+cameraDolly.add(controllerGrip2);
 
 //Lines to shoot out from VR controllers to help aim
 const geometry = new BufferGeometry().setFromPoints( [ new Vector3( 0, 0, 0 ), new Vector3( 0, 0, - 1 ) ] );
@@ -154,7 +153,6 @@ const clock = new Clock();
 function render() {
     const dt = clock.getDelta();
     if (controller1) { handleUserMovement(dt) }
-    moveUserWithJoystick()
     renderer.render( scene, camera );
 }
 
@@ -236,12 +234,12 @@ async function pick(event) {
         outputDesc.innerHTML = `Name: ${desc}`;
         propMesh.removeFromParent();
         propMesh = new HTMLMesh( messageBlock );
-        setX = found.point.x + 0.2*(controller.position.x - found.point.x);
-        setY = found.point.y + 0.2*(controller.position.y - found.point.y);
-        setZ = found.point.z + 0.2*(controller.position.z - found.point.z);
+        setX = found.point.x + 0.2*(cameraDolly.position.x - found.point.x);
+        setY = found.point.y + 0.2*(cameraDolly.position.y - found.point.y);
+        setZ = found.point.z + 0.2*(cameraDolly.position.z - found.point.z);
         propMesh.position.set( setX, setY, setZ );
         // propMesh.quaternion = found.object.mesh.quaternion
-        propMesh.lookAt(controller.position);
+        propMesh.lookAt(cameraDolly.position);
         propMesh.scale.setScalar( 2 );
         scene.add(propMesh);
     }
@@ -319,173 +317,4 @@ No way for me to test with no device - ThreeJS currently doesn't support VR thum
 so this is based on solution found on Stack Overflow here: https://stackoverflow.com/questions/62476426/webxr-controllers-for-button-pressing-in-three-js
 */
 
-var cameraVector = new Vector3();
-const prevGamePads = new Map();
 
-function moveUserWithJoystick() {
-    var handedness = "unknown";
-
-    //determine if we are in an xr session
-    const session = renderer.xr.getSession();
-    let i = 0;
-
-    if (session) {
-        let xrCamera = renderer.xr.getCamera(camera);
-        xrCamera.getWorldDirection(cameraVector);
-
-        //a check to prevent console errors if only one input source
-        if (isIterable(session.inputSources)) {
-            for (const source of session.inputSources) {
-                if (source && source.handedness) {
-                    handedness = source.handedness; //left or right controllers
-                }
-                if (!source.gamepad) continue;
-                const controller = renderer.xr.getController(i++);
-                const old = prevGamePads.get(source);
-                const data = {
-                    handedness: handedness,
-                    buttons: source.gamepad.buttons.map((b) => b.value),
-                    axes: source.gamepad.axes.slice(0)
-                };
-                if (old) {
-                    data.buttons.forEach((value, i) => {
-                        //handlers for buttons
-                        if (value !== old.buttons[i] || Math.abs(value) > 0.8) {
-                            //check if it is 'all the way pushed'
-                            if (value === 1) {
-                                //console.log("Button" + i + "Down");
-                                if (data.handedness == "left") {
-                                    //console.log("Left Paddle Down");
-                                    if (i == 1) {
-                                        cameraDolly.rotateY(-THREE.Math.degToRad(1));
-                                    }
-                                    if (i == 3) {
-                                        //reset teleport to home position
-                                        cameraDolly.position.x = 0;
-                                        cameraDolly.position.y = 5;
-                                        cameraDolly.position.z = 0;
-                                    }
-                                } else {
-                                    //console.log("Right Paddle Down");
-                                    if (i == 1) {
-                                        cameraDolly.rotateY(THREE.Math.degToRad(1));
-                                    }
-                                }
-                            } else {
-                                // console.log("Button" + i + "Up");
-
-                                if (i == 1) {
-                                    //use the paddle buttons to rotate
-                                    if (data.handedness == "left") {
-                                        //console.log("Left Paddle Down");
-                                        cameraDolly.rotateY(-THREE.Math.degToRad(Math.abs(value)));
-                                    } else {
-                                        //console.log("Right Paddle Down");
-                                        cameraDolly.rotateY(THREE.Math.degToRad(Math.abs(value)));
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    data.axes.forEach((value, i) => {
-                        //handlers for thumbsticks
-                        //if thumbstick axis has moved beyond the minimum threshold from center, windows mixed reality seems to wander up to about .17 with no input
-                        if (Math.abs(value) > 0.2) {
-                            //set the speedFactor per axis, with acceleration when holding above threshold, up to a max speed
-                            speedFactor[i] > 1 ? (speedFactor[i] = 1) : (speedFactor[i] *= 1.001);
-                            console.log(value, speedFactor[i], i);
-                            if (i == 2) {
-                                //left and right axis on thumbsticks
-                                if (data.handedness == "left") {
-                                    // (data.axes[2] > 0) ? console.log('left on left thumbstick') : console.log('right on left thumbstick')
-
-                                    //move our dolly
-                                    //we reverse the vectors 90degrees so we can do straffing side to side movement
-                                    cameraDolly.position.x -= cameraVector.z * speedFactor[i] * data.axes[2];
-                                    cameraDolly.position.z += cameraVector.x * speedFactor[i] * data.axes[2];
-
-                                    //provide haptic feedback if available in browser
-                                    if (
-                                        source.gamepad.hapticActuators &&
-                                        source.gamepad.hapticActuators[0]
-                                    ) {
-                                        var pulseStrength = Math.abs(data.axes[2]) + Math.abs(data.axes[3]);
-                                        if (pulseStrength > 0.75) {
-                                            pulseStrength = 0.75;
-                                        }
-
-                                        var didPulse = source.gamepad.hapticActuators[0].pulse(
-                                            pulseStrength,
-                                            100
-                                        );
-                                    }
-                                } else {
-                                    // (data.axes[2] > 0) ? console.log('left on right thumbstick') : console.log('right on right thumbstick')
-                                    cameraDolly.rotateY(-THREE.Math.degToRad(data.axes[2]));
-                                }
-                                controls.update();
-                            }
-
-                            if (i == 3) {
-                                //up and down axis on thumbsticks
-                                if (data.handedness == "left") {
-                                    // (data.axes[3] > 0) ? console.log('up on left thumbstick') : console.log('down on left thumbstick')
-                                    cameraDolly.position.y -= speedFactor[i] * data.axes[3];
-                                    //provide haptic feedback if available in browser
-                                    if (
-                                        source.gamepad.hapticActuators &&
-                                        source.gamepad.hapticActuators[0]
-                                    ) {
-                                        var pulseStrength = Math.abs(data.axes[3]);
-                                        if (pulseStrength > 0.75) {
-                                            pulseStrength = 0.75;
-                                        }
-                                        var didPulse = source.gamepad.hapticActuators[0].pulse(
-                                            pulseStrength,
-                                            100
-                                        );
-                                    }
-                                } else {
-                                    // (data.axes[3] > 0) ? console.log('up on right thumbstick') : console.log('down on right thumbstick')
-                                    cameraDolly.position.x -= cameraVector.x * speedFactor[i] * data.axes[3];
-                                    cameraDolly.position.z -= cameraVector.z * speedFactor[i] * data.axes[3];
-
-                                    //provide haptic feedback if available in browser
-                                    if (
-                                        source.gamepad.hapticActuators &&
-                                        source.gamepad.hapticActuators[0]
-                                    ) {
-                                        var pulseStrength = Math.abs(data.axes[2]) + Math.abs(data.axes[3]);
-                                        if (pulseStrength > 0.75) {
-                                            pulseStrength = 0.75;
-                                        }
-                                        var didPulse = source.gamepad.hapticActuators[0].pulse(
-                                            pulseStrength,
-                                            100
-                                        );
-                                    }
-                                }
-                                controls.update();
-                            }
-                        } else {
-                            //axis below threshold - reset the speedFactor if it is greater than zero  or 0.025 but below our threshold
-                            if (Math.abs(value) > 0.025) {
-                                speedFactor[i] = 0.025;
-                            }
-                        }
-                    });
-                }
-                ///store this frames data to compate with in the next frame
-                prevGamePads.set(source, data);
-            }
-        }
-    }
-}
-
-function isIterable(obj) {  //function to check if object is iterable
-    // checks for null and undefined
-    if (obj == null) {
-        return false;
-    }
-    return typeof obj[Symbol.iterator] === "function";
-}
